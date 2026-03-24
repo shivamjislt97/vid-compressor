@@ -163,7 +163,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Mega Video/Image Compressor Bot mein aapka swagat hai!*\n\n"
         "📌 *Kaise use karein:*\n"
-        "Bas mujhe koi bhi *Mega.nz link* bhejdo\n\n"
+        "Bas mujhe *single file* ka Mega link bhejdo\n\n"
         "🎬 *Video ke liye:*\n"
         "H.265 (CRF 18) codec se compress hoga\n"
         "_(Visually same quality, 50-70% chhoti file)_\n\n"
@@ -180,7 +180,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *Help*\n\n"
-        "1️⃣ Mega.nz pe apni file upload karo\n"
+        "1️⃣ Mega.nz pe apni *single file* upload karo\n"
         "2️⃣ Share link copy karo\n"
         "3️⃣ Mujhe woh link bhejo\n"
         "4️⃣ Main compress karke new Mega link bhejunga\n\n"
@@ -201,12 +201,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not match:
         await message.reply_text(
             "⚠️ Koi valid *Mega.nz link* nahi mili!\n\n"
-            "Format: `https://mega.nz/file/...` ya `https://mega.nz/folder/...`",
+            "Format: `https://mega.nz/file/...`",
             parse_mode="Markdown",
         )
         return
 
     mega_url = match.group(0)
+    lower_url = mega_url.lower()
+    if "/folder/" in lower_url:
+        await message.reply_text(
+            "⚠️ *Folder link abhi supported nahi hai.*\n\n"
+            "Please kisi *single file* ka Mega link bhejo:\n"
+            "`https://mega.nz/file/...`",
+            parse_mode="Markdown",
+        )
+        return
+
     user = message.from_user
     user_id = user.id if user else "unknown"
     logger.info(f"📥 New request | User: {user_id} | URL: {mega_url}")
@@ -302,6 +312,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             except Exception as exc:
                 logger.exception(f"❌ Unexpected error: {exc}")
+                err_text = str(exc)
+                if "Url key missing" in err_text:
+                    await status.edit_text(
+                        "⚠️ Ye link `folder` type lag raha hai ya invalid key hai.\n\n"
+                        "Please *single file* ka Mega link bhejo:\n"
+                        "`https://mega.nz/file/...`",
+                        parse_mode="Markdown",
+                    )
+                    return
                 await status.edit_text(
                     f"Error aa gaya: {type(exc).__name__}: {exc}\n\n"
                     "Dobara try karo ya /help dekho.",
