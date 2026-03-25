@@ -105,6 +105,8 @@ PROVIDER_LABELS = {
     "onionshare": "OnionShare",
 }
 
+AWAITING_MEGA_ACCOUNT_INPUT_KEY = "awaiting_mega_account_input"
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -167,6 +169,59 @@ def build_mega_accounts() -> list[tuple[str, str]]:
         seen.add(key)
         unique_accounts.append((email, password))
     return unique_accounts
+
+
+def parse_mega_account_input(text: str) -> Optional[tuple[str, str]]:
+    """User input se Mega email/password parse karo."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+
+    if "\n" in cleaned:
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        if len(lines) >= 2:
+            email, password = lines[0], lines[1]
+            return (email, password)
+
+    if "," in cleaned:
+        parts = [part.strip() for part in cleaned.split(",", 1)]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return parts[0], parts[1]
+
+    parts = cleaned.split(maxsplit=1)
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return parts[0].strip(), parts[1].strip()
+
+    return None
+
+
+def is_valid_email_like(value: str) -> bool:
+    """Basic email validation for UX (strict RFC validation ki zarurat nahi)."""
+    if "@" not in value:
+        return False
+    local, domain = value.split("@", 1)
+    return bool(local and domain and "." in domain)
+
+
+async def add_runtime_mega_account(email: str, password: str) -> tuple[bool, str]:
+    """Runtime account list mein naya Mega account add karo."""
+    global MEGA_ACCOUNTS
+
+    normalized_email = email.strip()
+    if not normalized_email or not password:
+        return False, "Email/password empty nahi hone chahiye."
+    if not is_valid_email_like(normalized_email):
+        return False, "Email format invalid lag raha hai."
+
+    async with mega_client_lock:
+        existing = {acc_email.lower() for acc_email, _ in MEGA_ACCOUNTS}
+        if normalized_email.lower() in existing:
+            return False, "Ye account pehle se configured hai."
+
+        MEGA_ACCOUNTS.append((normalized_email, password))
+        MEGA_ACCOUNT_COOLDOWN_UNTIL.pop(normalized_email.lower(), None)
+
+    return True, mask_email(normalized_email)
 
 
 def current_mega_account_email() -> str:
@@ -436,6 +491,7 @@ def mega_action_keyboard(output_id: Optional[str] = None) -> InlineKeyboardMarku
     """Bot actions ke liye inline keyboard build karo."""
     rows = [
         [InlineKeyboardButton("🔁 Change Mega Account", callback_data="mega_switch_account")],
+        [InlineKeyboardButton("➕ Add New Mega Account", callback_data="mega_add_account_prompt")],
     ]
     if output_id:
         rows.append([InlineKeyboardButton("📤 Re-upload to Mega", callback_data=f"mega_reupload:{output_id}")])
@@ -954,6 +1010,28 @@ async def on_switch_account_callback(update: Update, context: ContextTypes.DEFAU
         )
 
 
+async def on_add_account_prompt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User se new Mega account credentials collect karne ka prompt bhejo."""
+    query: Optional[CallbackQuery] = update.callback_query
+    if query is None:
+        return
+
+    context.user_data[AWAITING_MEGA_ACCOUNT_INPUT_KEY] = True
+    await query.answer("Send account credentials")
+
+    if query.message is not None:
+        await query.message.reply_text(
+            "➕ *Add New Mega Account*\n\n"
+            "Credentials bhejo in formats me se kisi ek mein:\n"
+            "1) `email@example.com password123`\n"
+            "2) `email@example.com,password123`\n"
+            "3) Do lines me: pehle email, dusri line password\n\n"
+            "Cancel karna ho to `cancel` bhej do.",
+            parse_mode="Markdown",
+            reply_markup=mega_action_keyboard(),
+        )
+
+
 async def on_reupload_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cached output ko dubara Mega pe upload karo."""
     query: Optional[CallbackQuery] = update.callback_query
@@ -1046,6 +1124,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = message.text.strip() if message.text else ""
+
+    if context.user_data.get(AWAITING_MEGA_ACCOUNT_INPUT_KEY):
+        lowered = text.lower().strip()
+        if lowered == "cancel":
+            context.user_data.pop(AWAITING_MEGA_ACCOUNT_INPUT_KEY, None)
+            await message.reply_text(
+                "❎ Add account cancelled.",
+                reply_markup=mega_action_keyboard(),
+            )
+            return
+
+        parsed = parse_mega_account_input(text)
+        if not parsed:
+            await message.reply_text(
+                "⚠️ Format samajh nahi aaya. Example bhejo:\n"
+                "`email@example.com password123`\n"
+                "Ya `email@example.com,password123`",
+                parse_mode="Markdown",
+                reply_markup=mega_action_keyboard(),
+            )
+            return
+
+        email, password = parsed
+        ok, detail = await add_runtime_mega_account(email, password)
+        if not ok:
+            await message.reply_text(
+                f"⚠️ Account add nahi hua: {detail}",
+                reply_markup=mega_action_keyboard(),
+            )
+            return
+
+        context.user_data.pop(AWAITING_MEGA_ACCOUNT_INPUT_KEY, None)
+        await message.reply_text(
+            "✅ *New Mega account added*\n\n"
+            f"Account: `{detail}`\n"
+            f"Total accounts: `{len(MEGA_ACCOUNTS)}`\n\n"
+            "Note: Ye runtime add hai; restart ke baad dubara set karna padega (ya env secrets me add karo).",
+            parse_mode="Markdown",
+            reply_markup=mega_action_keyboard(),
+        )
+        return
 
     # Mega link dhundho
     match = MEGA_LINK_RE.search(text)
@@ -1366,6 +1485,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help",  cmd_help))
     app.add_handler(CallbackQueryHandler(on_switch_account_callback, pattern="^mega_switch_account$"))
+    app.add_handler(CallbackQueryHandler(on_add_account_prompt_callback, pattern="^mega_add_account_prompt$"))
     app.add_handler(CallbackQueryHandler(on_reupload_callback, pattern="^mega_reupload:"))
     app.add_handler(CallbackQueryHandler(on_delete_outputs_callback, pattern="^mega_delete_outputs$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
