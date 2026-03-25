@@ -311,12 +311,24 @@ def provider_display_name(name: str) -> str:
 async def safe_edit_status(status_message, text: str, edit_lock: asyncio.Lock) -> None:
     """Status message edit with lock + harmless no-change handling."""
     async with edit_lock:
-        try:
-            await status_message.edit_text(text, parse_mode="Markdown")
-        except BadRequest as exc:
-            if "message is not modified" in str(exc).lower():
-                return
-            raise
+        await edit_text_with_fallback(status_message, text)
+
+
+async def edit_text_with_fallback(message, text: str, reply_markup=None) -> None:
+    """Markdown parse fail hone par plain text fallback ke saath edit karo."""
+    try:
+        await message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+        return
+    except BadRequest as exc:
+        lowered = str(exc).lower()
+        if "message is not modified" in lowered:
+            return
+        if "parse entities" in lowered:
+            # Dynamic URL/error text se Markdown parse fail ho to plain text fallback bhejo.
+            plain_text = text.replace("`", "").replace("*", "").replace("_", "")
+            await message.edit_text(plain_text, reply_markup=reply_markup)
+            return
+        raise
 
 
 def build_progress_text(progress_state: dict) -> str:
@@ -983,11 +995,11 @@ async def on_reupload_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         new_link = await mega_upload(str(output_path))
-        await status.edit_text(
+        await edit_text_with_fallback(
+            status,
             "✅ *Re-upload complete*\n\n"
             f"📄 File: `{meta.get('name', output_path.name)}`\n"
             f"🔗 Link: {new_link}",
-            parse_mode="Markdown",
             reply_markup=mega_action_keyboard(output_id=output_id),
         )
     except Exception as exc:
@@ -999,9 +1011,9 @@ async def on_reupload_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         else:
             msg = f"❌ Re-upload failed: `{type(exc).__name__}: {exc}`"
-        await status.edit_text(
+        await edit_text_with_fallback(
+            status,
             msg,
-            parse_mode="Markdown",
             reply_markup=mega_action_keyboard(output_id=output_id),
         )
 
@@ -1127,10 +1139,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # File type check
                 if ext not in VIDEO_EXTS and ext not in IMAGE_EXTS:
-                    await status.edit_text(
+                    await edit_text_with_fallback(
+                        status,
                         f"❌ Unsupported file type: `{ext}`\n\n"
                         "Sirf video (mp4, mkv, avi…) ya image (jpg, png…) files supported hain.",
-                        parse_mode="Markdown",
                     )
                     return
 
