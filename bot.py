@@ -171,6 +171,147 @@ def build_mega_accounts() -> list[tuple[str, str]]:
     return unique_accounts
 
 
+def apply_mega_runtime_patches() -> None:
+    """Known mega.py runtime bugs ke liye safe monkey patches apply karo."""
+    if getattr(Mega, "_megabot_download_patch_applied", False):
+        return
+
+    original_download = getattr(Mega, "_download_file", None)
+    if original_download is None:
+        return
+
+    g = original_download.__globals__
+    mega_base64_to_a32 = g.get("base64_to_a32")
+    mega_base64_url_decode = g.get("base64_url_decode")
+    mega_decrypt_attr = g.get("decrypt_attr")
+    mega_a32_to_str = g.get("a32_to_str")
+    mega_str_to_a32 = g.get("str_to_a32")
+    mega_get_chunks = g.get("get_chunks")
+    mega_request_error = g.get("RequestError")
+    mega_counter = g.get("Counter")
+    mega_aes = g.get("AES")
+
+    required = [
+        mega_base64_to_a32,
+        mega_base64_url_decode,
+        mega_decrypt_attr,
+        mega_a32_to_str,
+        mega_str_to_a32,
+        mega_get_chunks,
+        mega_request_error,
+        mega_counter,
+        mega_aes,
+    ]
+    if any(item is None for item in required):
+        logger.warning("Skipping Mega runtime patch: dependency symbol missing")
+        return
+
+    def _download_file_workaround(self, file_handle, file_key, dest_path=None, dest_filename=None, is_public=False, file=None):
+        if file is None:
+            if is_public:
+                file_key = mega_base64_to_a32(file_key)
+                file_data = self._api_request({
+                    "a": "g",
+                    "g": 1,
+                    "p": file_handle,
+                })
+            else:
+                file_data = self._api_request({
+                    "a": "g",
+                    "g": 1,
+                    "n": file_handle,
+                })
+
+            k = (file_key[0] ^ file_key[4], file_key[1] ^ file_key[5], file_key[2] ^ file_key[6], file_key[3] ^ file_key[7])
+            iv = file_key[4:6] + (0, 0)
+            meta_mac = file_key[6:8]
+        else:
+            file_data = self._api_request({"a": "g", "g": 1, "n": file["h"]})
+            k = file["k"]
+            iv = file["iv"]
+            meta_mac = file["meta_mac"]
+
+        if "g" not in file_data:
+            raise mega_request_error("File not accessible anymore")
+
+        file_url = file_data["g"]
+        file_size = file_data["s"]
+        attribs = mega_base64_url_decode(file_data["at"])
+        attribs = mega_decrypt_attr(attribs, k)
+        file_name = dest_filename if dest_filename is not None else attribs["n"]
+
+        input_file = requests.get(file_url, stream=True).raw
+        output_dir = "" if dest_path is None else f"{dest_path}/"
+
+        with tempfile.NamedTemporaryFile(mode="w+b", prefix="megabot_", delete=False) as temp_output_file:
+            k_str = mega_a32_to_str(k)
+            counter = mega_counter.new(128, initial_value=((iv[0] << 32) + iv[1]) << 64)
+            aes = mega_aes.new(k_str, mega_aes.MODE_CTR, counter=counter)
+
+            mac_str = "\0" * 16
+            mac_encryptor = mega_aes.new(k_str, mega_aes.MODE_CBC, mac_str.encode("utf8"))
+            iv_str = mega_a32_to_str([iv[0], iv[1], iv[0], iv[1]])
+
+            for chunk_start, chunk_size in mega_get_chunks(file_size):
+                chunk = input_file.read(chunk_size)
+                chunk = aes.decrypt(chunk)
+                temp_output_file.write(chunk)
+
+                encryptor = mega_aes.new(k_str, mega_aes.MODE_CBC, iv_str)
+                last_idx = 0
+                for idx in range(0, len(chunk) - 16, 16):
+                    block = chunk[idx:idx + 16]
+                    encryptor.encrypt(block)
+                    last_idx = idx
+
+                # mega.py bugfix: last chunk <16 bytes hone par idx undefined rehta tha.
+                block_start = (last_idx + 16) if len(chunk) > 16 else 0
+                block = chunk[block_start:block_start + 16]
+                if len(block) % 16:
+                    block += b"\0" * (16 - (len(block) % 16))
+                mac_str = mac_encryptor.encrypt(encryptor.encrypt(block))
+
+                file_info = os.stat(temp_output_file.name)
+                logger.info("%s of %s downloaded", file_info.st_size, file_size)
+
+            file_mac = mega_str_to_a32(mac_str)
+            if (file_mac[0] ^ file_mac[1], file_mac[2] ^ file_mac[3]) != meta_mac:
+                raise ValueError("Mismatched mac")
+
+            output_path = Path(output_dir + file_name)
+            shutil.move(temp_output_file.name, output_path)
+            return output_path
+
+    def _download_file_patched(self, file_handle, file_key, dest_path=None, dest_filename=None, is_public=False, file=None):
+        try:
+            return original_download(
+                self,
+                file_handle,
+                file_key,
+                dest_path=dest_path,
+                dest_filename=dest_filename,
+                is_public=is_public,
+                file=file,
+            )
+        except UnboundLocalError as exc:
+            if "local variable 'i' referenced before assignment" not in str(exc):
+                raise
+            logger.warning("Applying Mega download workaround for local variable 'i' bug")
+            return _download_file_workaround(
+                self,
+                file_handle,
+                file_key,
+                dest_path=dest_path,
+                dest_filename=dest_filename,
+                is_public=is_public,
+                file=file,
+            )
+
+    Mega._download_file = _download_file_patched
+    Mega._megabot_download_patch_applied = True
+    logger.info("Applied Mega runtime patch: download local variable 'i' workaround")
+
+
 def parse_mega_account_input(text: str) -> Optional[tuple[str, str]]:
     """User input se Mega email/password parse karo."""
     cleaned = (text or "").strip()
@@ -1451,6 +1592,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     global MEGA_ACCOUNTS
+    apply_mega_runtime_patches()
     MEGA_ACCOUNTS = build_mega_accounts()
 
     missing = [
