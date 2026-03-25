@@ -10,6 +10,9 @@ GitHub Actions pe bilkul **free** chalta hai — koi server kharidne ki zaroorat
 - 🎬 **Video Compression** — H.265 (HEVC) CRF-18, visually lossless quality
 - 🖼️ **Image Optimization** — Pillow se lossless/near-lossless compression
 - 📊 **Stats** — Original vs Compressed size aur % savings dikhata hai
+- ⏱️ **Live Progress** — Har 10 second phase update + approximate ETA
+- 🔁 **Auto Backup Account** — Mega block hone par next account pe auto switch
+- 🔗 **No-Account Output Link Fallback** — `file.io -> transfer.sh -> WeTransfer -> OnionShare` chain (auto fallback)
 - 🔄 **24/7 Free** — GitHub Actions pe automatic restart every 5 hours
 - ☁️ **Mega.nz** — Download aur upload dono Mega se
 
@@ -55,6 +58,34 @@ Teen secrets add karo:
 | `TELEGRAM_TOKEN`  | BotFather se mila token        |
 | `MEGA_EMAIL`      | Tumhara Mega.nz email          |
 | `MEGA_PASSWORD`   | Tumhara Mega.nz password       |
+
+Optional backup account (recommended):
+
+| Secret Name       | Value                          |
+|-------------------|-------------------------------|
+| `MEGA_EMAIL_2`    | Backup Mega account email      |
+| `MEGA_PASSWORD_2` | Backup Mega account password   |
+
+Optional output sharing provider:
+
+| Env Var                   | Value                                                                 |
+|---------------------------|----------------------------------------------------------------------|
+| `OUTPUT_SHARE_PROVIDER`   | Legacy single provider (`mega`, `fileio`, `transfersh`, `wetransfer`) |
+| `OUTPUT_SHARE_PROVIDERS`  | Comma-separated fallback chain. Example: `fileio,transfersh,wetransfer,onionshare` |
+| `TRANSFER_SH_BASE`        | default: `https://transfer.sh`                                       |
+| `FILEIO_BASE`             | default: `https://file.io`                                           |
+
+Recommended (no-account output links):
+
+```env
+OUTPUT_SHARE_PROVIDERS=fileio,transfersh,wetransfer,onionshare
+PREFER_ANON_MEGA_DOWNLOAD=1
+```
+
+Notes:
+- Agar pehla provider fail hota hai toh bot next provider try karta hai.
+- `send anywhere` ko `transfer.sh` alias treat kiya gaya hai.
+- `onionshare` tabhi kaam karega jab runtime mein `onionshare-cli` installed + configured ho.
 
 ---
 
