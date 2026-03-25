@@ -591,6 +591,27 @@ def is_valid_mega_file_link(url: str) -> bool:
     return bool(MEGA_FILE_LINK_RE.search(url.strip()))
 
 
+def parse_mega_file_components(url: str) -> tuple[str, str]:
+    """Mega public file URL se (file_id, file_key) safely extract karo."""
+    cleaned = url.strip()
+
+    # New format: https://mega.nz/file/<id>#<key>
+    match = re.search(r"mega\.(?:nz|co\.nz)/file/([^#/?]+)#([^/?\s]+)", cleaned, re.IGNORECASE)
+    if match:
+        file_id, file_key = match.group(1), match.group(2)
+        if file_id and file_key:
+            return file_id, file_key
+
+    # Legacy format: https://mega.nz/#!<id>!<key>
+    legacy = re.search(r"mega\.(?:nz|co\.nz)/#!([^!/?\s]+)!([^/?\s]+)", cleaned, re.IGNORECASE)
+    if legacy:
+        file_id, file_key = legacy.group(1), legacy.group(2)
+        if file_id and file_key:
+            return file_id, file_key
+
+    raise ValueError("Unable to parse Mega file id/key from URL")
+
+
 def is_mega_transient_error(exc: Exception) -> bool:
     """Transient Mega/network errors identify karo taaki retry kiya ja sake."""
     text = str(exc).lower()
@@ -823,6 +844,8 @@ async def mega_download(
     on_attempt: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
 ) -> Path:
     """Download with retries + relogin for stale session/network hiccups."""
+    file_id, file_key = parse_mega_file_components(url)
+
     if PREFER_ANON_MEGA_DOWNLOAD:
         try:
             if on_attempt is not None:
@@ -831,7 +854,13 @@ async def mega_download(
             logger.info("⬇️ Trying anonymous Mega download first (no account login)...")
 
             def _anon_download():
-                return Mega().download_url(url, dest_path)
+                anon_client = Mega()
+                return anon_client._download_file(
+                    file_handle=file_id,
+                    file_key=file_key,
+                    dest_path=dest_path,
+                    is_public=True,
+                )
 
             downloaded = await asyncio.to_thread(_anon_download)
             if not downloaded:
@@ -850,7 +879,16 @@ async def mega_download(
         client = await get_mega_client(force_relogin=(attempt > 1))
         try:
             await throttle_mega_action("download", current_mega_account_email())
-            downloaded = await asyncio.to_thread(client.download_url, url, dest_path)
+
+            def _account_download():
+                return client._download_file(
+                    file_handle=file_id,
+                    file_key=file_key,
+                    dest_path=dest_path,
+                    is_public=True,
+                )
+
+            downloaded = await asyncio.to_thread(_account_download)
             if not downloaded:
                 raise RuntimeError("Mega download returned empty path")
             if isinstance(downloaded, (list, tuple)):
@@ -1548,6 +1586,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "⚠️ Ye link `folder` type lag raha hai ya invalid key hai.\n\n"
                         "Please *single file* ka Mega link bhejo:\n"
                         "`https://mega.nz/file/...`",
+                        edit_lock,
+                    )
+                    return
+                if "unable to parse mega file id/key" in err_text.lower():
+                    await safe_edit_status(
+                        status,
+                        "⚠️ Link parse issue aa rahi hai.\n\n"
+                        "Please full *single file* Mega link bhejo (without trimming):\n"
+                        "`https://mega.nz/file/...#...`",
                         edit_lock,
                     )
                     return
