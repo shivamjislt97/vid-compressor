@@ -270,7 +270,7 @@ def normalize_provider_name(name: str) -> str:
 
 
 def configured_upload_providers() -> list[str]:
-    """Configured provider order return karo (comma-separated fallback chain)."""
+    """Configured provider order return karo (resilient fallback chain ke saath)."""
     chain = OUTPUT_SHARE_PROVIDERS
     if chain:
         raw_items = [p.strip() for p in chain.split(",") if p.strip()]
@@ -285,8 +285,20 @@ def configured_upload_providers() -> list[str]:
             seen.add(normalized)
             providers.append(normalized)
 
+    # Agar single public provider fail ho jaye (network blocked), backup providers auto add karo.
+    if len(providers) <= 1:
+        for fallback in ("fileio", "transfersh"):
+            if fallback not in seen:
+                seen.add(fallback)
+                providers.append(fallback)
+
+    # Mega account available ho to last-resort rescue path add karo.
+    if MEGA_ACCOUNTS and "mega" not in seen:
+        seen.add("mega")
+        providers.append("mega")
+
     if not providers:
-        providers = ["transfersh"]
+        providers = ["fileio", "transfersh"]
 
     return providers
 
