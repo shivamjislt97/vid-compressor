@@ -462,6 +462,9 @@ def is_mega_transient_error(exc: Exception) -> bool:
         "einternal",
         "etempunavail",
         "too many requests",
+        "unboundlocalerror",
+        "local variable 'i' referenced before assignment",
+        "referenced before assignment",
     )
     return any(token in text for token in retry_tokens)
 
